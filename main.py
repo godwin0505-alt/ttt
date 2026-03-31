@@ -53,20 +53,17 @@ except Exception:
 
 # ========================================
 # RASPBERRY PI GPIO CONFIGURATION
-# ========================================
-# GPIO Pin Assignments
-RELAY_PIN = 3          # Controls USB power to OTDR (bind/unbind)
-SOLENOID_POWER_PIN  = 17 # Powers ON/OFF the OTDR
-SOLENOID_TEST_PIN = 18   # Triggers TEST on OTDR
+# ===============================# GPIO Pin Assignments
+RELAY_PIN = 2          # Controls USB power to OTDR (bind/unbind) (GPIO2)
+SOLENOID_POWER_PIN  = 17 # Powers ON/OFF the OTDR (GPIO17)
+SOLENOID_TEST_PIN = 18   # Triggers TEST on OTDR (GPIO18)
 
 # Timing Configuration (seconds)
-UNBIND_DELAY = 3        # Wait after power ON before binding OTDR
 POWER_ON_DURATION = 5   # How long to hold power button (LOW pulse)
-POWER_ON_WAIT = 3       # Wait after binding before triggering test
 TEST_TRIGGER_DURATION = 3  # How long to hold test button (LOW pulse)
 TEST_COMPLETION_WAIT = 30  # Wait for OTDR to test and store result
-BIND_DELAY = 10         # Wait after unbinding for file access
-POWER_OFF_DURATION = 5  # How long to hold power button to turn off (LOW pulse)
+BIND_DELAY = 15         # Wait after binding for file access to mount
+POWER_OFF_DURATION = 5  # How long to hold power button to turn off (LOW pulse) (LOW pulse)
 
 # File Paths (Raspberry Pi)
 OTDR_DATA_PATH = "/media/thejoofc/16 GB Volume/OTDRDATA"  # Where OTDR saves .sor files
@@ -1422,131 +1419,114 @@ def run_otdr_test_sequence():
     """
     Main automation function - executes complete OTDR test cycle.
     
-    Workflow:
-    1. Unbind OTDR (relay OFF)
-    2. Power ON OTDR (solenoid pulse)
-    3. Trigger TEST (solenoid pulse + wait)
-    4. Bind OTDR (relay ON)
-    5. Monitor for new .sor files
-    6. Convert to JSON and upload
-    7. Power OFF OTDR
-    8. Send completion status
+    Workflow Sequence:
+    1. Init: GPIO2 LOW, GPIO17 HIGH, GPIO18 HIGH
+    2. Power ON: GPIO17 LOW, hold 5s, HIGH
+    3. Test: GPIO18 LOW, hold 3s, HIGH
+    4. Wait: 30s for test completion
+    5. Bind: GPIO2 HIGH
+    6. Mount Delay: 15s delay
+    7. Process files: Conversion and push links
+    8. Power OFF: GPIO17 LOW, hold 5s, HIGH
+    9. Reset to Initial State: GPIO2 LOW, GPIO17 HIGH, GPIO18 HIGH
     
     Returns:
         bool: True if successful, False otherwise
     """
-    global test_in_progress, dashboard_communicator
+    global test_in_progress
     
     test_in_progress = True
     gpio = GPIOController()
-    dashboard = DashboardCommunicator()
-    dashboard_communicator = dashboard
     
     try:
-        # Initialize GPIO
-        dashboard.send_status("INITIALIZING", "Setting up GPIO pins...")
+        # STEP 1: Initialize GPIO pins
+        print("📡 [INITIALIZING] Setting up GPIO pins...")
+        print("  -> GPIO2 LOW (unbound)")
+        print("  -> GPIO17 HIGH (Power solenoid off)")
+        print("  -> GPIO18 HIGH (Test solenoid off)")
         if not gpio.setup_gpio():
-            dashboard.send_status("ERROR", "GPIO initialization failed")
+            print("❌ [ERROR] GPIO initialization failed")
             return False
         
-        # INITIAL STATE: RELAY=LOW (unbound), POWER=HIGH (off), TEST=HIGH (off)
-        # (Already set by setup_gpio initial values)
-        
-        # STEP 1: Power ON OTDR (SOLENOID_POWER_PIN LOW for 5s, then back to HIGH)
-        dashboard.send_status("POWERING_ON", "Activating OTDR power button...")
+        # STEP 2: Power ON OTDR
+        print("📡 [POWERING_ON] Activating OTDR power button...")
         if not gpio.solenoid_pulse(SOLENOID_POWER_PIN, POWER_ON_DURATION, "Power ON"):
-            dashboard.send_status("ERROR", "Failed to power ON OTDR")
+            print("❌ [ERROR] Failed to power ON OTDR")
             gpio.cleanup_gpio()
             return False
-        
-        # STEP 2: 3 second delay, then RELAY_PIN = HIGH (bind OTDR)
-        dashboard.send_status("BINDING", "Waiting before binding OTDR...")
-        time.sleep(UNBIND_DELAY)  # 3 second delay
-        
-        dashboard.send_status("BINDING", "Connecting OTDR to system...")
-        if not gpio.relay_control(bind_otdr=True):
-            dashboard.send_status("ERROR", "Failed to bind OTDR")
-            gpio.cleanup_gpio()
-            return False
-        
-        # STEP 3: 3 second delay, then trigger TEST (SOLENOID_TEST_PIN LOW for 3s, then HIGH)
-        dashboard.send_status("TESTING", "Waiting before triggering test...")
-        time.sleep(POWER_ON_WAIT)  # 3 second delay
-        
-        dashboard.send_status("TESTING", "Starting OTDR test sequence...")
+            
+        # STEP 3: Start test
+        print("📡 [TESTING] Starting OTDR test sequence...")
         if not gpio.solenoid_pulse(SOLENOID_TEST_PIN, TEST_TRIGGER_DURATION, "Trigger TEST"):
-            dashboard.send_status("ERROR", "Failed to trigger test")
+            print("❌ [ERROR] Failed to trigger test")
             gpio.cleanup_gpio()
             return False
-        
-        # STEP 4: 30 second delay for OTDR to test fiber and store result
-        dashboard.send_status("TESTING", f"Waiting {TEST_COMPLETION_WAIT}s for test to complete...")
+            
+        # STEP 4: Delay for test completion
+        print(f"📡 [TESTING] Waiting {TEST_COMPLETION_WAIT}s for test to complete...")
         time.sleep(TEST_COMPLETION_WAIT)
         
-        # STEP 5: RELAY_PIN = LOW (unbind OTDR to access files)
-        dashboard.send_status("UNBINDING", "Disconnecting OTDR for file access...")
-        if not gpio.relay_control(bind_otdr=False):
-            dashboard.send_status("ERROR", "Failed to unbind OTDR")
+        # STEP 5: Bind OTDR
+        print("📡 [BINDING] Connecting OTDR to Pi...")
+        if not gpio.relay_control(bind_otdr=True):
+            print("❌ [ERROR] Failed to bind OTDR")
             gpio.cleanup_gpio()
             return False
+            
+        # STEP 6: Delay to mount
+        print(f"📡 [MONITORING] Waiting {BIND_DELAY}s for OTDR storage to mount...")
+        time.sleep(BIND_DELAY)
         
-        # STEP 6: 10 second delay, then search/convert/upload files
-        dashboard.send_status("MONITORING", "Waiting for OTDR storage to be ready...")
-        time.sleep(BIND_DELAY)  # 10 second delay
-        
-        # STEP 7: Monitor for new files, convert, and upload
-        dashboard.send_status("MONITORING", "Checking for new OTDR files...")
+        # STEP 7: Access files, convert, and push
+        print("📡 [MONITORING] Checking for new OTDR files...")
         file_handler = SORFileHandler(JSON_OUTPUT_PATH, upload_json_to_backend)
-        
-        # Find latest date folder
         latest_folder = file_handler.find_latest_date_folder()
         if not latest_folder:
-            dashboard.send_status("WARNING", "No date folders found in OTDR data path")
+            print("⚠️ [WARNING] No date folders found in OTDR data path")
         else:
-            # Check for unconverted files
             unconverted = file_handler.find_unconverted_files(latest_folder)
-            
             if not unconverted:
-                dashboard.send_status("WARNING", "No new .sor files found")
+                print("⚠️ [WARNING] No new .sor files found")
             else:
-                dashboard.send_status("CONVERTING", f"Found {len(unconverted)} new file(s)")
-                
-                # Convert and upload each file
+                print(f"📡 [CONVERTING] Found {len(unconverted)} new file(s)")
                 success_count = 0
                 for sor_file in unconverted:
-                    dashboard.send_status("CONVERTING", f"Processing {os.path.basename(sor_file)}...")
+                    print(f"📡 [CONVERTING] Processing {os.path.basename(sor_file)}...")
                     if file_handler.convert_and_upload(sor_file):
                         success_count += 1
+                print(f"📡 [UPLOADING] Successfully processed {success_count}/{len(unconverted)} files")
                 
-                dashboard.send_status("UPLOADING", f"Successfully processed {success_count}/{len(unconverted)} files")
-        
-        # STEP 8: 5 second delay, then RELAY_PIN = HIGH (bind OTDR back)
-        dashboard.send_status("BINDING", "Waiting before re-binding OTDR...")
-        time.sleep(5)
-        
-        dashboard.send_status("BINDING", "Re-connecting OTDR...")
-        if not gpio.relay_control(bind_otdr=True):
-            dashboard.send_status("WARNING", "Failed to re-bind OTDR")
-        
-        # STEP 9: Power OFF OTDR (SOLENOID_POWER_PIN LOW for 5s, then HIGH)
-        dashboard.send_status("POWERING_OFF", "Shutting down OTDR...")
+        # STEP 8: Power OFF OTDR
+        print("📡 [POWERING_OFF] Shutting down OTDR...")
         if not gpio.solenoid_pulse(SOLENOID_POWER_PIN, POWER_OFF_DURATION, "Power OFF"):
-            dashboard.send_status("WARNING", "Failed to power OFF OTDR (may already be off)")
-        
-        # STEP 8: Completion
-        dashboard.send_status("COMPLETE", "OTDR test cycle completed successfully ✅", progress=100)
+            print("⚠️ [WARNING] Failed to power OFF OTDR")
+            
+        # STEP 9: Reset to initial state
+        print("📡 [RESET] Resetting to initial state...")
+        print("  -> GPIO2 LOW (unbound)")
+        print("  -> GPIO17 HIGH (Power solenoid off)")
+        print("  -> GPIO18 HIGH (Test solenoid off)")
+        gpio.relay_control(bind_otdr=False)
+        if GPIO_AVAILABLE:
+            try:
+                GPIO.output(SOLENOID_POWER_PIN, GPIO.HIGH)
+                GPIO.output(SOLENOID_TEST_PIN, GPIO.HIGH)
+            except Exception as e:
+                print(f"⚠️  Resetting pins failed: {e}")
+                
+        print("📡 [COMPLETE] OTDR test cycle completed successfully ✅")
         gpio.cleanup_gpio()
         test_in_progress = False
         return True
         
     except KeyboardInterrupt:
-        dashboard.send_status("INTERRUPTED", "Test sequence interrupted by user")
+        print("📡 [INTERRUPTED] Test sequence interrupted by user")
         gpio.cleanup_gpio()
         test_in_progress = False
         return False
         
     except Exception as e:
-        dashboard.send_status("ERROR", f"Unexpected error: {str(e)}")
+        print(f"❌ [ERROR] Unexpected error: {str(e)}")
         import traceback
         traceback.print_exc()
         gpio.cleanup_gpio()
@@ -1566,39 +1546,23 @@ def upload_json_to_backend(json_file_path):
         # Read JSON file
         with open(json_file_path, 'r') as f:
             json_data = json.load(f)
-        
-        # Determine server configuration
-        if USE_LOCAL_SERVER:
-            url = LOCAL_SERVER_URL
-            token = LOCAL_SERVER_TOKEN
-        else:
-            url = COMPANY_SERVER_URL
-            token = COMPANY_SERVER_TOKEN
-        
-        # Prepare headers
+        url = "https://test.api.thejotech.com/api/meta/postdata"
         headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {token}"
+            "Content-Type": "application/json"
         }
-        
-        # Add custom headers if configured
+        # If you have a token, add it here (uncomment and set value if needed)
+        # headers["Authorization"] = f"Bearer {YOUR_TOKEN}"
         if CUSTOM_HEADERS:
             headers.update(CUSTOM_HEADERS)
-        
-        # Send POST request
         print(f"📤 Uploading to: {url}")
         response = requests.post(url, json=json_data, headers=headers, timeout=30)
-        
-        if response.status_code == 200 or response.status_code == 201:
-            result = response.json()
-            report_id = result.get('data', {}).get('report_id', 'N/A')
-            print(f"✅ Upload successful! Report ID: {report_id}")
+        if response.status_code in (200, 201):
+            print(f"✅ Upload successful! Response: {response.text}")
             return True
         else:
             print(f"❌ Upload failed: {response.status_code}")
             print(f"Response: {response.text}")
             return False
-            
     except Exception as e:
         print(f"❌ Upload error: {e}")
         import traceback
