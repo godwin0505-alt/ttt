@@ -1455,6 +1455,9 @@ def run_otdr_test_sequence():
             gpio.cleanup_gpio()
             return False
             
+        print("📡 [WAITING] 5s delay before test trigger...")
+        time.sleep(5)
+            
         # STEP 3: Start test
         print("📡 [TESTING] Starting OTDR test sequence...")
         if not gpio.solenoid_pulse(SOLENOID_TEST_PIN, TEST_TRIGGER_DURATION, "Trigger TEST"):
@@ -1495,6 +1498,11 @@ def run_otdr_test_sequence():
                     if file_handler.convert_and_upload(sor_file):
                         success_count += 1
                 print(f"📡 [UPLOADING] Successfully processed {success_count}/{len(unconverted)} files")
+                
+        print("📡 [UNBINDING] Disconnecting OTDR before power off...")
+        gpio.relay_control(bind_otdr=False)
+        print("📡 [WAITING] 5s delay before power off...")
+        time.sleep(5)
                 
         # STEP 8: Power OFF OTDR
         print("📡 [POWERING_OFF] Shutting down OTDR...")
