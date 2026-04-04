@@ -1542,6 +1542,50 @@ def run_otdr_test_sequence():
         return False
 
 
+# API Authentication Settings
+API_USERNAME = "john_doe"
+API_PASSWORD = "securePassword123"
+API_SIGNIN_URL = "https://test.api.thejotech.com/api/auth/signin"
+API_POST_URL = "https://test.api.thejotech.com/api/meta/postdata"
+
+_auth_token = None
+_token_expiry = 0
+
+def get_auth_token():
+    """Fetch or return cached authentication token."""
+    global _auth_token, _token_expiry
+    # Refresh token if it's not set or expires in less than 5 minutes
+    if not _auth_token or time.time() > (_token_expiry - 300):
+        print("🔄 Fetching new authentication token...")
+        try:
+            response = requests.post(
+                API_SIGNIN_URL,
+                json={"username": API_USERNAME, "password": API_PASSWORD},
+                headers={"Content-Type": "application/json"},
+                timeout=10
+            )
+            response.raise_for_status()
+            data = response.json()
+            
+            # Try to extract token from common fields
+            token = data.get("token") or data.get("accessToken") or data.get("access_token")
+            if not token and "data" in data and isinstance(data["data"], dict):
+                token = data["data"].get("token") or data["data"].get("accessToken")
+                
+            if token:
+                _auth_token = token
+                # Set expiry to 24 hours from now
+                _token_expiry = time.time() + (24 * 3600)
+                print("✅ Token fetched successfully")
+            else:
+                print("❌ Failed to extract token from response:", data)
+                return None
+        except Exception as e:
+            print(f"❌ Error fetching token: {e}")
+            return None
+            
+    return _auth_token
+
 def upload_json_to_backend(json_file_path):
     """
     Upload JSON file to backend database.
@@ -1554,16 +1598,33 @@ def upload_json_to_backend(json_file_path):
         # Read JSON file
         with open(json_file_path, 'r') as f:
             json_data = json.load(f)
-        url = "https://test.api.thejotech.com/api/meta/postdata"
+            
+        url = API_POST_URL
         headers = {
             "Content-Type": "application/json"
         }
-        # If you have a token, add it here (uncomment and set value if needed)
-        # headers["Authorization"] = f"Bearer {YOUR_TOKEN}"
+        
+        token = get_auth_token()
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+            
         if CUSTOM_HEADERS:
             headers.update(CUSTOM_HEADERS)
+            
         print(f"📤 Uploading to: {url}")
         response = requests.post(url, json=json_data, headers=headers, timeout=30)
+        
+        # If unauthorized, try to clear token and retry once
+        if response.status_code in (401, 403):
+            print("⚠️ Unauthorized upload, token might be invalid. Refreshing token and retrying...")
+            global _auth_token, _token_expiry
+            _auth_token = None
+            _token_expiry = 0
+            token = get_auth_token()
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+                response = requests.post(url, json=json_data, headers=headers, timeout=30)
+                
         if response.status_code in (200, 201):
             print(f"✅ Upload successful! Response: {response.text}")
             return True
