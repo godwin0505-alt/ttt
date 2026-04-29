@@ -62,7 +62,7 @@ SOLENOID_TEST_PIN = 18   # Triggers TEST on OTDR (GPIO18)
 POWER_ON_DURATION = 5   # How long to hold power button (LOW pulse)
 TEST_TRIGGER_DURATION = 3  # How long to hold test button (LOW pulse)
 TEST_COMPLETION_WAIT = 30  # Wait for OTDR to test and store result
-BIND_DELAY = 15         # Wait after binding for file access to mount
+BIND_DELAY = 60         # Wait after binding for file access to mount
 POWER_OFF_DURATION = 5  # How long to hold power button to turn off (LOW pulse) (LOW pulse)
 
 # File Paths (Raspberry Pi)
@@ -1504,17 +1504,21 @@ def run_otdr_test_sequence():
         print("📡 [WAITING] 5s delay before power off...")
         time.sleep(5)
                 
-        # STEP 8: Power OFF OTDR
-        print("📡 [POWERING_OFF] Shutting down OTDR...")
-        if not gpio.solenoid_pulse(SOLENOID_POWER_PIN, POWER_OFF_DURATION, "Power OFF"):
-            print("⚠️ [WARNING] Failed to power OFF OTDR")
-            
-        # STEP 9: Reset to initial state
-        print("📡 [RESET] Resetting to initial state...")
-        print("  -> GPIO2 LOW (unbound)")
-        print("  -> GPIO17 HIGH (Power solenoid off)")
-        print("  -> GPIO18 HIGH (Test solenoid off)")
-        gpio.relay_control(bind_otdr=False)
+        # STEP 2: Power ON OTDR
+        print("\uD83D\uDCE1 [POWERING_ON] Activating OTDR power button...")
+        if not gpio.solenoid_pulse(SOLENOID_POWER_PIN, POWER_ON_DURATION, "Power ON"):
+            print("\u274C [ERROR] Failed to power ON OTDR")
+            gpio.cleanup_gpio()
+            return False
+
+        # Add delay after Power ON duration
+        print("\uD83D\uDCE1 [WAITING] 5s delay after Power ON...")
+        time.sleep(5)
+
+        print("\uD83D\uDCE1 [WAITING] 5s delay before test trigger...")
+        time.sleep(5)
+
+        # STEP 3: Start test
         if GPIO_AVAILABLE:
             try:
                 GPIO.output(SOLENOID_POWER_PIN, GPIO.HIGH)
